@@ -12,11 +12,11 @@ from a copy of the game **you legally own**.
 
 You need files from "Angry_Birds_Classic_7.0.0.apk"
 
-Copy the `.nro` to your SD card (e.g. `sdmc:/switch/angrybirds_nx.nro`), then
+Copy the `.nro` to your SD card (e.g. `sdmc:/switch/angrybirds/angrybirds_nx.nro`), then
 place your game files **next to the `.nro`**, in the same folder:
 
 ```
-sdmc:/switch/
+sdmc:/switch/angrybirds
 ├── angrybirds_nx.nro
 ├── libAngryBirdsClassic.so        <- from your APK: lib/arm64-v8a/
 └── assets/                        <- from your APK: the whole assets/ folder
