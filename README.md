@@ -46,16 +46,6 @@ A USB mouse works in both handheld and docked: move to control the cursor, left-
 sensitivity.
 Your stick, mouse and gyro sensitivities are remembered in `pointer.cfg` automatically after in-game adjustment.
 
-## Controls
-
-In **handheld mode** the game is driven by the touchscreen, exactly like Android.
-
-In **docked mode** (no touchscreen) the left stick drives an on-screen cursor
-and **A** taps — press-and-hold **A** while moving the stick to drag (this is how
-you pull back and aim the slingshot). A small crosshair shows the cursor
-position. **B** or **+** send the Android *Back* key (cancel / menu-back). The
-**HOME** button suspends/exits as usual.
-
 ## Languages
 On first launch the wrapper writes `sdmc:/switch/angrybirds/config.txt`
 (one `name value` per line, `#` for comments):
