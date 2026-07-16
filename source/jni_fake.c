@@ -125,11 +125,25 @@ static jstring jf_NewStringUTF(JNIEnv e, const char *bytes) {
   o->str = strdup(bytes ? bytes : "");
   return o;
 }
+static int looks_like_locale(const char *s) {
+  if (!s) return 0;
+  size_t n = strlen(s);
+  if (n == 1 && s[0] == 'C') return 1;                       // the C locale
+  if (n >= 2 && n <= 6) {                                    // "fr", "fr_FR", "es_419"
+    if ((s[0] >= 'a' && s[0] <= 'z') && (s[1] >= 'a' && s[1] <= 'z')) return 1;
+  }
+  return 0;
+}
 static const char *jf_GetStringUTFChars(JNIEnv e, jstring s, jboolean *isCopy) {
   (void)e;
   FakeObj *o = s;
   if (isCopy) *isCopy = JNI_FALSE;
-  return (o && o->tag == T_STRING) ? o->str : "";
+  const char *r = (o && o->tag == T_STRING) ? o->str : "";
+  if (looks_like_locale(r)) {                                // trace locale reads
+    static int n = 0;
+    if (n < 40) { debugPrintf("GetStringUTFChars locale-ish: \"%s\"\n", r); n++; }
+  }
+  return r;
 }
 static void jf_ReleaseStringUTFChars(JNIEnv e, jstring s, const char *c) {
   (void)e; (void)s; (void)c; // chars point straight into the FakeObj; nothing to free

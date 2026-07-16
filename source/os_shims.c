@@ -33,6 +33,7 @@
 #include "util.h"
 #include "so_util.h"
 #include "libc_shim.h"
+#include "fusion.h"
 #include "os_shims.h"
 
 // Bionic/Linux mmap constants (independent of the host newlib values)
@@ -187,7 +188,20 @@ ssize_t writev_fake(int fd, const struct iovec *iov, int iovcnt) {
 // small libc gaps
 // ---------------------------------------------------------------------------
 
-void *getenv_fake(const char *name) { (void)name; return NULL; }
+void *getenv_fake(const char *name) {
+  if (name) {
+    // Some engines/Lua read the UI locale from the POSIX locale env vars.
+    if (!strcmp(name, "LANG") || !strcmp(name, "LANGUAGE") ||
+        !strcmp(name, "LC_ALL") || !strcmp(name, "LC_MESSAGES") ||
+        !strcmp(name, "LC_CTYPE")) {
+      const char *loc = fusion_locale();      // e.g. "fr_FR"
+      debugPrintf("getenv(%s) -> %s\n", name, loc);
+      return (void *)loc;
+    }
+    debugPrintf("getenv(%s) -> NULL\n", name);
+  }
+  return NULL;
+}
 int   system_fake(const char *command) { (void)command; return -1; }
 
 int fcntl_fake(int fd, int cmd, ...) {
@@ -248,6 +262,7 @@ char *strcasestr_fake(const char *haystack, const char *needle) {
 // ---------------------------------------------------------------------------
 
 char *setlocale_fake(int category, const char *locale) {
+  debugPrintf("setlocale(cat=%d, %s) -> C\n", category, locale ? locale : "(query)");
   (void)category; (void)locale;
   return (char *)"C"; // the engine only checks for a non-NULL locale
 }

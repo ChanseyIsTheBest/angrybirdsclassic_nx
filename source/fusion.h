@@ -28,4 +28,8 @@ void *fusion_audio_peer(void);     // native stream ptr to echo back to nativeMi
 void fusion_set_audio_peer(void *p);
 int  fusion_audio_wanted(void);    // set once the engine has created an output
 
+// --- resolved UI locale (from config.language or the Switch system language) ---
+const char *fusion_locale(void);    // e.g. "fr_FR"
+const char *fusion_language(void);  // e.g. "fr"
+
 #endif

@@ -17,20 +17,16 @@
 #include "util.h"
 
 #define CONFIG_VARS \
-  CONFIG_VAR_INT(screen_width);  \
-  CONFIG_VAR_INT(screen_height); \
-  CONFIG_VAR_INT(docked_width);  \
-  CONFIG_VAR_INT(docked_height); \
   CONFIG_VAR_STR(language);
 
 Config config;
 static int config_needs_rewrite = 0;
 
-// One flag per config key, set when that key is found in the file. After parsing
-// we compare against the full set: a missing key means the file predates a new
-// option, so we rewrite it (adding the new key with its default). This is what
-// makes a freshly-added option like "language" appear in an existing config.txt.
-static struct { int screen_width, screen_height, docked_width, docked_height, language; } seen;
+// One flag per config key, set when that key is found in the file. A missing key
+// means the file predates a new option, so we rewrite it (adding the key with
+// its default) -- this is what makes a freshly-added option appear in an
+// existing config.txt.
+static struct { int language; } seen;
 
 static void copy_str(char *dst, const char *src, size_t n) {
   if (n == 0) return;
@@ -53,10 +49,6 @@ int read_config(const char *file) {
   char line[1024] = { 0 };
 
   // defaults
-  config.screen_width  = 0;   // automatic
-  config.screen_height = 0;   // automatic
-  config.docked_width  = 1920;
-  config.docked_height = 1080;
   copy_str(config.language, "auto", sizeof(config.language));
   config_needs_rewrite = 0;
   memset(&seen, 0, sizeof(seen));
@@ -101,13 +93,10 @@ int write_config(const char *file) {
 
   fprintf(f, "# Angry Birds Classic (Switch) configuration\n");
   fprintf(f, "#\n");
-  fprintf(f, "# screen_width / screen_height: 0 = automatic (1920x1080 docked,\n");
-  fprintf(f, "#   1280x720 handheld). Set both to force a fixed resolution.\n");
-  fprintf(f, "# docked_width / docked_height: resolution used when docked while\n");
-  fprintf(f, "#   screen_width/height are automatic.\n");
   fprintf(f, "# language: 'auto' follows the Switch system language, or set a\n");
   fprintf(f, "#   2-letter code: en de fr es it pt ru ja ko zh nl sv da no fi.\n");
-  fprintf(f, "#   Languages actually shown depend on what your game files include.\n\n");
+  fprintf(f, "#   \"pt_BR\"/\"zh_TW\" also work. Languages actually shown depend on\n");
+  fprintf(f, "#   what translations your game files include.\n\n");
 
   #define CONFIG_VAR_INT(var) fprintf(f, "%s %d\n", #var, config.var)
   #define CONFIG_VAR_STR(var) fprintf(f, "%s %s\n", #var, config.var[0] ? config.var : "auto")

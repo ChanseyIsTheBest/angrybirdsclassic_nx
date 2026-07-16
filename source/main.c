@@ -31,6 +31,7 @@
 #include <SDL2/SDL.h>
 
 #include "config.h"
+#include "locale_patch.h"
 #include "util.h"
 #include "error.h"
 #include "so_util.h"
@@ -39,8 +40,9 @@
 #include "jni_fake.h"
 #include "fusion.h"
 #include "audio.h"
+#include "nx_pointer.h"
 
-int screen_width = 1280, screen_height = 720;
+int screen_width = 1920, screen_height = 1080;   // fixed 1080p (see config.h)
 
 static void *heap_so_base = NULL;
 static size_t heap_so_limit = 0;
@@ -205,91 +207,49 @@ static void resolve_entry_points(void) {
 }
 
 // ---------------------------------------------------------------------------
-// input: touch panel + a left-stick/A pointer for docked play
-//   Fusion nativeInput actions (from disassembly): 0=DOWN 1=UP 2=MOVE 3=CANCEL
+// input: the nx_pointer module owns touch, USB mouse, the stick-driven cursor
+// and gyro pointing, and draws the on-screen cursor. We translate its pointer
+// events into the engine's nativeInput calls (Fusion actions, from disassembly:
+// 0=DOWN 1=UP 2=MOVE). B is kept as a hardware Android "Back" -- the module uses
+// +, -, L, R, A, ZR, ZL and the d-pad, but not B -- driven off its own pad.
 // ---------------------------------------------------------------------------
 #define ACT_DOWN 0
 #define ACT_UP   1
 #define ACT_MOVE 2
+#define AKEYCODE_BACK 4       // Android KEYCODE_BACK
 
-static PadState pad;
-static int touch_down = 0; static float last_x = 0, last_y = 0;
-static float cur_x, cur_y; static int cur_init = 0, btn_down = 0;
-static int g_docked = 0;      // updated from the operation mode each frame
+static PadState back_pad;
 static int back_held = 0;
 
-#define AKEYCODE_BACK 4       // Android KEYCODE_BACK
-#define AKEY_DOWN 0
-#define AKEY_UP   1
-
-static void update_touch(void) {
-  HidTouchScreenState st = {0};
-  const float sx = (float)screen_width / 1280.0f;
-  const float sy = (float)screen_height / 720.0f;
-  if (hidGetTouchScreenStates(&st, 1) && st.count > 0) {
-    const float x = st.touches[0].x * sx, y = st.touches[0].y * sy;
-    if (!touch_down) { touch_down = 1; e_nativeInput(fake_env, thiz, ACT_DOWN, 0, x, y); }
-    else if (x != last_x || y != last_y) { e_nativeInput(fake_env, thiz, ACT_MOVE, 0, x, y); }
-    last_x = x; last_y = y;
-  } else if (touch_down) {
-    touch_down = 0; e_nativeInput(fake_env, thiz, ACT_UP, 0, last_x, last_y);
+static int nxp_phase_to_act(int phase) {
+  switch (phase) {
+    case NXP_DOWN: return ACT_DOWN;
+    case NXP_UP:   return ACT_UP;
+    default:       return ACT_MOVE;   // NXP_MOVE
   }
 }
 
-// Left stick drives a virtual cursor; A taps/drags at it (press-move-release
-// gives slingshot control). This is the docked-mode input path since there's no
-// touchscreen, but it's harmless in handheld too. B / + send the Android Back
-// key (cancel / menu-back).
-static void update_stick_pointer(void) {
-  padUpdate(&pad);
-  if (!cur_init) { cur_x = screen_width * 0.5f; cur_y = screen_height * 0.5f; cur_init = 1; }
-  const HidAnalogStickState ls = padGetStickPos(&pad, 0);
-  const float dz = 0.15f * 32767.0f;
-  const float speed = screen_height / 720.0f * 12.0f;   // scale cursor speed with resolution
-  float dx = (fabsf((float)ls.x) > dz) ? (ls.x / 32767.0f) : 0.0f;
-  float dy = (fabsf((float)ls.y) > dz) ? (ls.y / 32767.0f) : 0.0f;
-  if (dx != 0.0f || dy != 0.0f) {
-    cur_x += dx * speed; cur_y -= dy * speed;
-    if (cur_x < 0) cur_x = 0; if (cur_x > screen_width)  cur_x = screen_width;
-    if (cur_y < 0) cur_y = 0; if (cur_y > screen_height) cur_y = screen_height;
-    if (btn_down) e_nativeInput(fake_env, thiz, ACT_MOVE, 0, cur_x, cur_y);
-  }
-  const u64 down = padGetButtonsDown(&pad), up = padGetButtonsUp(&pad);
-  const u64 held = padGetButtons(&pad);
-  if ((down & HidNpadButton_A) && !btn_down) { btn_down = 1; e_nativeInput(fake_env, thiz, ACT_DOWN, 0, cur_x, cur_y); }
-  if ((up & HidNpadButton_A) && btn_down)    { btn_down = 0; e_nativeInput(fake_env, thiz, ACT_UP, 0, cur_x, cur_y); }
-
-  // B / + -> Android Back key
-  if (e_nativeKeyInput) {
-    if ((down & (HidNpadButton_B | HidNpadButton_Plus)) && !back_held) {
-      back_held = 1; e_nativeKeyInput(fake_env, thiz, AKEYCODE_BACK, AKEY_DOWN, 0, 0);
-    }
-    if (back_held && !(held & (HidNpadButton_B | HidNpadButton_Plus))) {
-      back_held = 0; e_nativeKeyInput(fake_env, thiz, AKEYCODE_BACK, AKEY_UP, 0, 0);
-    }
-  }
+// Feed this frame's pointer events (touch / stick cursor / mouse / gyro) to the
+// engine as nativeInput calls.
+static void feed_pointer(void) {
+  NxpEvent ev[24];
+  int n = nxp_poll(ev, 24);
+  for (int i = 0; i < n; i++)
+    e_nativeInput(fake_env, thiz, nxp_phase_to_act(ev[i].phase), ev[i].id, ev[i].x, ev[i].y);
 }
 
-// Draw the virtual cursor as a small white crosshair with a dark outline, using
-// scissor+clear (no shaders needed). Docked only -- handheld uses the touch
-// screen. Called after the engine renders, before the buffer swap.
-static void draw_cursor(void) {
-  if (!g_docked) return;
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);        // engine uses FBOs (pp.fx); draw to screen
-  const int cx = (int)cur_x;
-  const int cy = screen_height - (int)cur_y;   // GL origin is bottom-left
-  const int L = screen_height / 40;            // arm length, scales with res
-  int t = screen_height / 240; if (t < 2) t = 2;  // arm thickness
-  glEnable(GL_SCISSOR_TEST);
-  // outline (black), slightly larger
-  glClearColor(0.f, 0.f, 0.f, 1.f);
-  glScissor(cx - L - 1, cy - t/2 - 1, 2*L + 2, t + 2); glClear(GL_COLOR_BUFFER_BIT);
-  glScissor(cx - t/2 - 1, cy - L - 1, t + 2, 2*L + 2); glClear(GL_COLOR_BUFFER_BIT);
-  // white core
-  glClearColor(1.f, 1.f, 1.f, 1.f);
-  glScissor(cx - L, cy - t/2, 2*L, t); glClear(GL_COLOR_BUFFER_BIT);
-  glScissor(cx - t/2, cy - L, t, 2*L); glClear(GL_COLOR_BUFFER_BIT);
-  glDisable(GL_SCISSOR_TEST);
+// B -> Android Back (cancel / menu-back), as a down/up pair.
+static void update_backkey(void) {
+  padUpdate(&back_pad);
+  if (!e_nativeKeyInput) return;
+  const u64 down = padGetButtonsDown(&back_pad);
+  const u64 held = padGetButtons(&back_pad);
+  if ((down & HidNpadButton_B) && !back_held) {
+    back_held = 1; e_nativeKeyInput(fake_env, thiz, AKEYCODE_BACK, 0, 0, 0);
+  }
+  if (back_held && !(held & HidNpadButton_B)) {
+    back_held = 0; e_nativeKeyInput(fake_env, thiz, AKEYCODE_BACK, 1, 0, 0);
+  }
 }
 
 // Software keyboard: when the engine (TextInput) requests it, pop the Switch
@@ -336,12 +296,12 @@ static void start_engine(void) {
     debugPrintf("JNI_OnLoad -> 0x%x\n", v);
   }
 
-  // nativeConfig: exact config-object shape is build-specific; we pass an empty
-  // config token and log. If the engine reads fields off it they resolve to 0
-  // via the fake JNI (defaults). Refine from the device log if needed.
+  // nativeConfig's string is the app's writable files directory (the engine uses
+  // it as its file-cache path via getPathToFileCacheDirectory) -- confirmed from
+  // the Fusion Java layer (MySurfaceView passes getFilesDir().getAbsolutePath()).
   if (e_nativeConfig) {
-    jobject cfg = jni_make_string(""); // non-null stand-in
-    debugPrintf("nativeConfig(...)\n");
+    jobject cfg = jni_make_string(DATA_DIR);
+    debugPrintf("nativeConfig(\"%s\")\n", DATA_DIR);
     e_nativeConfig(fake_env, thiz, cfg);
   }
 
@@ -359,45 +319,11 @@ static void applet_hook_fn(AppletHookType type, void *param) {
   if (type == AppletHookType_OnExitRequest) jni_quit_requested = 1;
 }
 
+static void nxp_log(const char *msg) { debugPrintf("%s", msg); }
+
 static void boot_mark(const char *stage) {
   FILE *f = fopen(DATA_DIR "/angrybirds_nx_stage.txt", "w");
   if (f) { fputs(stage, f); fputc('\n', f); fclose(f); }
-}
-
-// ---------------------------------------------------------------------------
-// resolution: automatic per dock state, or forced by config.txt
-// ---------------------------------------------------------------------------
-static void compute_resolution(int *w, int *h) {
-  g_docked = (appletGetOperationMode() == AppletOperationMode_Console);
-  if (config.screen_width > 0 && config.screen_height > 0) {
-    *w = config.screen_width;  *h = config.screen_height;    // forced by config
-  } else if (g_docked) {
-    *w = (config.docked_width  > 0) ? config.docked_width  : 1920;
-    *h = (config.docked_height > 0) ? config.docked_height : 1080;
-  } else {
-    *w = 1280; *h = 720;                                     // handheld panel
-  }
-  if (*w > 1920) *w = 1920;   if (*h > 1080) *h = 1080;      // Switch display cap
-  if (*w < 640)  *w = 1280;   if (*h < 360)  *h = 720;
-}
-
-// Re-apply the resolution for the current dock state; recreates the EGL surface
-// and tells the engine to resize. Called every frame but only acts on a change,
-// so docking/undocking live switches between 1080p and 720p.
-static void update_resolution(void) {
-  int w, h;
-  compute_resolution(&w, &h);                 // also refreshes g_docked
-  if (w == screen_width && h == screen_height) return;
-  const int ow = screen_width, oh = screen_height;
-  screen_width = w; screen_height = h;
-  if (!egl_make_surface()) {                   // e.g. mid dock transition
-    screen_width = ow; screen_height = oh;     // revert, retry next frame
-    debugPrintf("resize: surface recreate failed, retrying\n");
-    return;
-  }
-  glViewport(0, 0, screen_width, screen_height);
-  if (e_nativeResize) e_nativeResize(fake_env, thiz, screen_width, screen_height);
-  debugPrintf("resolution -> %dx%d (%s)\n", w, h, g_docked ? "docked" : "handheld");
 }
 
 int main(int argc, char *argv[]) {
@@ -436,13 +362,13 @@ int main(int argc, char *argv[]) {
   check_data();
 
   // Load config.txt (create it with defaults on first run / if it names retired
-  // keys), then pick the initial resolution for the current dock state.
+  // Load config.txt (create it / add new keys on first run), then set the fixed
+  // 1080p render size. Handheld downscales to the 720p panel automatically.
   if (read_config(CONFIG_NAME) != 0)
     write_config(CONFIG_NAME);
-  { int w, h; compute_resolution(&w, &h); screen_width = w; screen_height = h; }
-  debugPrintf("config: screen=%dx%d docked_pref=%dx%d -> boot %dx%d (%s)\n",
-      config.screen_width, config.screen_height, config.docked_width, config.docked_height,
-      screen_width, screen_height, g_docked ? "docked" : "handheld");
+  screen_width = 1920; screen_height = 1080;
+  debugPrintf("config: language=%s -> render %dx%d (fixed)\n",
+      config.language, screen_width, screen_height);
 
   SDL_SetMainReady();
   if (SDL_Init(SDL_INIT_AUDIO) < 0)
@@ -453,9 +379,19 @@ int main(int argc, char *argv[]) {
     fatal_error("Failed to create an OpenGL ES 2 context.\n\nInstall switch-mesa (pacman -S switch-mesa\nswitch-libdrm_nouveau) and rebuild.");
   boot_mark("after_egl");
 
-  padConfigureInput(8, HidNpadStyleSet_NpadStandard);
-  padInitializeAny(&pad);
-  hidInitializeTouchScreen();
+  // Pointer input + on-screen cursor (touch, USB mouse, stick cursor, gyro). It
+  // owns the pad/touch/mouse; we keep a small separate pad just for the B (Back)
+  // button, which the module doesn't use. pointer.cfg + cursor.png live in the
+  // game folder; route its file I/O through the engine's wrappers.
+  NxpConfig np = {0};
+  np.screen_w = screen_width; np.screen_h = screen_height;
+  np.panel_w  = 1280; np.panel_h = 720;
+  np.cursor_id = 0;     // Angry Birds only registers taps on low pointer ids
+  np.data_dir = DATA_DIR;
+  np.log = nxp_log;
+  np.fopen_fn = fopen_fake; np.fclose_fn = fclose_fake;
+  nxp_init(&np);
+  padInitializeDefault(&back_pad);   // separate pad just for the B (Back) button
 
   debugPrintf("heap: .so zone %u KB at %p\n",
       (unsigned)(heap_so_limit / 1024), heap_so_base);
@@ -464,6 +400,10 @@ int main(int argc, char *argv[]) {
   boot_mark("after_load_module");
   jni_init();
   thiz = jni_make_thiz();
+  // Patch stock gamelogic.lua to the configured language (before the engine
+  // loads any script). No-op for English/unsupported or if the key/format differ.
+  locale_patch_init();
+  boot_mark("after_locale_patch");
   start_engine();
   boot_mark("after_start_engine");
 
@@ -472,14 +412,14 @@ int main(int argc, char *argv[]) {
   u64 frame_deadline = armGetSystemTick() + frame_ticks;
 
   while (appletMainLoop() && !jni_quit_requested) {
-    update_resolution();                  // live dock/undock -> 1080p / 720p
-    update_touch();
-    update_stick_pointer();
+    nxp_update();                         // touch / mouse / stick cursor / gyro
+    feed_pointer();                       // -> engine nativeInput
+    update_backkey();                     // B -> Android Back
     handle_keyboard();
     audio_poll();
 
     e_nativeUpdate(fake_env, thiz);       // update + render (this build)
-    draw_cursor();                        // virtual cursor overlay (docked)
+    nxp_draw();                           // cursor overlay on top of the frame
     eglSwapBuffers(s_display, s_surface);
 
     if (frame < 5 || (frame % 300) == 0) {

@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 #include <errno.h>
 #include <ctype.h>
@@ -35,6 +36,7 @@
 #include "util.h"
 #include "so_util.h"
 #include "libc_shim.h"
+#include "locale_patch.h"
 #include "obb.h"
 
 // Redirect the engine's root-relative data files (it opens absolute paths like
@@ -754,6 +756,19 @@ int resolve_asset_path(const char *rel, char *out, size_t out_size) {
   if (!rel || !out || out_size == 0) return 0;
   while (rel[0] == '.' && rel[1] == '/') rel += 2;          // strip leading "./"
 
+  // Language patch: serve the on-boot-patched gamelogic.lua instead of the stock
+  // one. g_patched_gamelogic is empty until locale_patch_init() succeeds, so the
+  // patcher's own read of the stock file (before that) is never redirected.
+  if (g_patched_gamelogic[0]) {
+    size_t rl = strlen(rel);
+    static const char suf[] = "scripts_common/gamelogic.lua";
+    size_t sl = sizeof(suf) - 1;
+    if (rl >= sl && strcmp(rel + rl - sl, suf) == 0 && file_exists(g_patched_gamelogic)) {
+      snprintf(out, out_size, "%s", g_patched_gamelogic);
+      return 1;
+    }
+  }
+
   if (rel[0] == '/' || strchr(rel, ':')) {                  // already a host path
     if (file_exists(rel)) { snprintf(out, out_size, "%s", rel); return 1; }
     return 0;
@@ -776,7 +791,17 @@ int resolve_asset_path(const char *rel, char *out, size_t out_size) {
 // carrying a device ("sdmc:/..."), and real pseudo-paths (/proc, /dev, /sys)
 // which must keep their original meaning.
 static const char *remap_data_path(const char *path, char *buf, size_t bufsz) {
-  if (!path || path[0] != '/') return path;
+  if (!path) return path;
+  // The engine canonicalises the SD card device as "Sdmc:" (from the
+  // "sdmc:/..." files dir we hand nativeConfig), but the real libnx fsdev mount
+  // is lowercase "sdmc:". Any other case fails to open with ENOSYS, which turns
+  // a save write into an uncaught C++ exception that aborts during unwind.
+  // Normalise the scheme so saves actually open.
+  if (strncasecmp(path, "sdmc:", 5) == 0 && strncmp(path, "sdmc:", 5) != 0) {
+    snprintf(buf, bufsz, "sdmc:%s", path + 5);
+    return buf;
+  }
+  if (path[0] != '/') return path;
   if (!strncmp(path, "/proc", 5) || !strncmp(path, "/dev", 4) ||
       !strncmp(path, "/sys", 4))
     return path;

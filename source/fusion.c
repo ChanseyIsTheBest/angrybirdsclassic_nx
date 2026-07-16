@@ -171,6 +171,9 @@ static void resolve_language(void) {
   debugPrintf("language: %s (locale %s)\n", s_lang, s_locale);
 }
 
+const char *fusion_locale(void)   { resolve_language(); return s_locale; }
+const char *fusion_language(void) { resolve_language(); return s_lang; }
+
 jvalue fusion_call(const char *cls, const char *method, const char *sig,
                    void *self, va_list ap) {
   (void)self;
@@ -262,9 +265,9 @@ jvalue fusion_call(const char *cls, const char *method, const char *sig,
   if (IS("getModel"))        { r.l = jni_make_string("Switch"); return r; }
   if (IS("getManufacturer")) { r.l = jni_make_string("Nintendo"); return r; }
   if (IS("getOSVersion") || IS("getSystemVersion")) { r.l = jni_make_string("10"); return r; }
-  if (IS("getLanguage") || IS("getCurrentLanguage")) { resolve_language(); r.l = jni_make_string(s_lang); return r; }
-  if (IS("getCurrentLocale") || IS("getDefault") || IS("getLocale")) { resolve_language(); r.l = jni_make_string(s_locale); return r; }
-  if (IS("getCountry"))      { resolve_language(); r.l = jni_make_string(s_country); return r; }
+  if (IS("getLanguage") || IS("getCurrentLanguage")) { resolve_language(); debugPrintf("JNI %s -> %s\n", method, s_lang); r.l = jni_make_string(s_lang); return r; }
+  if (IS("getCurrentLocale") || IS("getDefault") || IS("getLocale")) { resolve_language(); debugPrintf("JNI %s -> %s\n", method, s_locale); r.l = jni_make_string(s_locale); return r; }
+  if (IS("getCountry"))      { resolve_language(); debugPrintf("JNI getCountry -> %s\n", s_country); r.l = jni_make_string(s_country); return r; }
   if (IS("getCurrencyCode")) { r.l = jni_make_string("USD"); return r; }
   if (IS("getClipboardText")) { r.l = jni_make_string(""); return r; }
   if (IS("getCurrentTime"))  { r.j = 0; return r; }

@@ -44,21 +44,17 @@
 // "." and "data" cover titles laid out without the assets/ wrapper.
 #define ASSET_ROOTS { "assets", ".", "data" }
 
-// Render size. 0 in the config file means "automatic": 1920x1080 when docked,
-// 1280x720 in handheld. The port tracks dock/undock at runtime and re-resizes.
+// Render size is fixed at 1080p in both docked and handheld for a consistent
+// layout; in handheld the console downscales to the 720p panel. The touch panel
+// still reports in its own 1280x720 space, so touch is scaled into render space.
 extern int screen_width;
 extern int screen_height;
 
 // ---- user config file (sdmc:/switch/angrybirds/config.txt) ----
-// A simple "name value" text file, created with defaults on first run. Lets the
-// player force a resolution or change the docked resolution without rebuilding.
+// A simple "name value" text file, created with defaults on first run.
 #define CONFIG_NAME DATA_DIR "/config.txt"
 
 typedef struct {
-  int screen_width;    // 0 = automatic (per dock state)
-  int screen_height;   // 0 = automatic
-  int docked_width;    // resolution used when docked & automatic (default 1920)
-  int docked_height;   // default 1080
   char language[8];    // "auto" or a 2-letter code (en, de, fr, es, it, ...)
 } Config;
 
