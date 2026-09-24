@@ -34,6 +34,10 @@
 // than frame time, so logging is ON by default. Set to 0 once the game is
 // stable. (Independent of this, main() always writes a tiny stage breadcrumb to
 // sdmc:/angrybirds_nx_stage.txt so a crash still tells us how far it got.)
+// Debug build: ON to diagnose the Simplified Chinese title-menu crash. The log
+// goes to sdmc:/switch/angrybirds/angrybirds_nx.log; a CPU crash additionally
+// writes registers + a backtrace (as offsets into the .so) to the log and to
+// sdmc:/switch/angrybirds/angrybirds_nx_crash.txt (see crash_log.c).
 #define DEBUG_LOG 0
 
 // Assets are looked up relative to these roots, in order. Drop the APK's
@@ -56,6 +60,8 @@ extern int screen_height;
 
 typedef struct {
   char language[8];    // "auto" or a 2-letter code (en, de, fr, es, it, ...)
+  char powerups[8];    // "off", "max" (9999) or a count to keep each power-up at
+  char zh_logo[8];     // Simplified Chinese logo: "all", "splash" (boot only) or "off"
 } Config;
 
 extern Config config;

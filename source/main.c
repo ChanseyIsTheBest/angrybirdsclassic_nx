@@ -32,6 +32,7 @@
 
 #include "config.h"
 #include "locale_patch.h"
+#include "powerup_patch.h"
 #include "util.h"
 #include "error.h"
 #include "so_util.h"
@@ -367,8 +368,8 @@ int main(int argc, char *argv[]) {
   if (read_config(CONFIG_NAME) != 0)
     write_config(CONFIG_NAME);
   screen_width = 1920; screen_height = 1080;
-  debugPrintf("config: language=%s -> render %dx%d (fixed)\n",
-      config.language, screen_width, screen_height);
+  debugPrintf("config: language=%s powerups=%s zh_logo=%s -> render %dx%d (fixed)\n",
+      config.language, config.powerups, config.zh_logo, screen_width, screen_height);
 
   SDL_SetMainReady();
   if (SDL_Init(SDL_INIT_AUDIO) < 0)
@@ -404,6 +405,10 @@ int main(int argc, char *argv[]) {
   // loads any script). No-op for English/unsupported or if the key/format differ.
   locale_patch_init();
   boot_mark("after_locale_patch");
+  // Optional config "powerups": top up the power-ups in the player's save
+  // before the engine loads it. No-op when "off" (the default).
+  powerup_patch_init();
+  boot_mark("after_powerup_patch");
   start_engine();
   boot_mark("after_start_engine");
 

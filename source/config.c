@@ -16,8 +16,11 @@
 #include "config.h"
 #include "util.h"
 
+// CONFIG_VAR_STR(name, default)
 #define CONFIG_VARS \
-  CONFIG_VAR_STR(language);
+  CONFIG_VAR_STR(language, "auto"); \
+  CONFIG_VAR_STR(powerups, "off"); \
+  CONFIG_VAR_STR(zh_logo, "all");
 
 Config config;
 static int config_needs_rewrite = 0;
@@ -26,7 +29,7 @@ static int config_needs_rewrite = 0;
 // means the file predates a new option, so we rewrite it (adding the key with
 // its default) -- this is what makes a freshly-added option appear in an
 // existing config.txt.
-static struct { int language; } seen;
+static struct { int language, powerups, zh_logo; } seen;
 
 static void copy_str(char *dst, const char *src, size_t n) {
   if (n == 0) return;
@@ -36,8 +39,8 @@ static void copy_str(char *dst, const char *src, size_t n) {
 }
 
 static inline void parse_var(const char *name, const char *value) {
-  #define CONFIG_VAR_INT(var) if (!strcmp(name, #var)) { config.var = atoi(value); seen.var = 1; return; }
-  #define CONFIG_VAR_STR(var) if (!strcmp(name, #var)) { copy_str(config.var, value, sizeof(config.var)); seen.var = 1; return; }
+  #define CONFIG_VAR_INT(var, def) if (!strcmp(name, #var)) { config.var = atoi(value); seen.var = 1; return; }
+  #define CONFIG_VAR_STR(var, def) if (!strcmp(name, #var)) { copy_str(config.var, value, sizeof(config.var)); seen.var = 1; return; }
   CONFIG_VARS
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_STR
@@ -49,7 +52,11 @@ int read_config(const char *file) {
   char line[1024] = { 0 };
 
   // defaults
-  copy_str(config.language, "auto", sizeof(config.language));
+  #define CONFIG_VAR_INT(var, def) config.var = (def);
+  #define CONFIG_VAR_STR(var, def) copy_str(config.var, (def), sizeof(config.var));
+  CONFIG_VARS
+  #undef CONFIG_VAR_INT
+  #undef CONFIG_VAR_STR
   config_needs_rewrite = 0;
   memset(&seen, 0, sizeof(seen));
 
@@ -77,8 +84,8 @@ int read_config(const char *file) {
 
   // any key missing from the file (e.g. an option added in a newer build)?
   // rewrite so it gets added with its default while keeping the user's values.
-  #define CONFIG_VAR_INT(var) if (!seen.var) config_needs_rewrite = 1;
-  #define CONFIG_VAR_STR(var) if (!seen.var) config_needs_rewrite = 1;
+  #define CONFIG_VAR_INT(var, def) if (!seen.var) config_needs_rewrite = 1;
+  #define CONFIG_VAR_STR(var, def) if (!seen.var) config_needs_rewrite = 1;
   CONFIG_VARS
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_STR
@@ -96,10 +103,21 @@ int write_config(const char *file) {
   fprintf(f, "# language: 'auto' follows the Switch system language, or set a\n");
   fprintf(f, "#   2-letter code: en de fr es it pt ru ja ko zh nl sv da no fi.\n");
   fprintf(f, "#   \"pt_BR\"/\"zh_TW\" also work. Languages actually shown depend on\n");
-  fprintf(f, "#   what translations your game files include.\n\n");
+  fprintf(f, "#   what translations your game files include.\n");
+  fprintf(f, "#\n");
+  fprintf(f, "# powerups: 'off' leaves your save alone. 'max' tops every power-up\n");
+  fprintf(f, "#   (Sling Scope, King Sling, Super Seeds, Birdquake, plus Shockwave and\n");
+  fprintf(f, "#   Red's Mighty Feathers once unlocked) up to 9999, the most the game\n");
+  fprintf(f, "#   can display; a number (1-9999) tops them up to that instead. Applied\n");
+  fprintf(f, "#   at every launch; counts above the target are never lowered. Your\n");
+  fprintf(f, "#   save is backed up once to settings.lua.bak first.\n");
+  fprintf(f, "#\n");
+  fprintf(f, "# zh_logo: Simplified Chinese title logo. 'all' = boot screen and main\n");
+  fprintf(f, "#   menu, 'splash' = boot screen only, 'off' = English logo everywhere.\n");
+  fprintf(f, "#   (Troubleshooting switch; other languages ignore it.)\n\n");
 
-  #define CONFIG_VAR_INT(var) fprintf(f, "%s %d\n", #var, config.var)
-  #define CONFIG_VAR_STR(var) fprintf(f, "%s %s\n", #var, config.var[0] ? config.var : "auto")
+  #define CONFIG_VAR_INT(var, def) fprintf(f, "%s %d\n", #var, config.var)
+  #define CONFIG_VAR_STR(var, def) fprintf(f, "%s %s\n", #var, config.var[0] ? config.var : (def))
   CONFIG_VARS
   #undef CONFIG_VAR_INT
   #undef CONFIG_VAR_STR

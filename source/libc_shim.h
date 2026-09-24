@@ -128,6 +128,10 @@ const void *AAsset_getBuffer_fake(void *a);   // whole-asset pointer (AB uses th
 void set_asset_base(const char *dir);
 int  resolve_asset_path(const char *rel, char *out, size_t out_size);
 
+// Host path of a save file the engine opens root-relative ("/settings.lua" ->
+// "<game dir>/settings.lua"), using the same mapping as the fopen/open shims.
+int data_file_path(const char *name, char *out, size_t out_size);
+
 // save-path redirection wrappers (remap /-rooted data files into the game dir)
 int rename_fake(const char *oldp, const char *newp);
 int remove_fake(const char *path);

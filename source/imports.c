@@ -41,6 +41,7 @@
 #include <EGL/egl.h>
 #include <switch.h>
 
+#include "crash_log.h"
 #include "config.h"
 #include "so_util.h"
 #include "util.h"
@@ -281,7 +282,7 @@ DynLibFunction dynlib_functions[] = {
   { "__stack_chk_fail", (uintptr_t)&__stack_chk_fail },
   { "__stack_chk_guard", (uintptr_t)&__stack_chk_guard },
   { "_ctype_", (uintptr_t)&_ctype_ },
-  { "abort", (uintptr_t)&abort },
+  { "abort", (uintptr_t)&crash_log_abort },   // logs caller + backtrace, then abort()
   { "access", (uintptr_t)&access_fake },
   { "acos", (uintptr_t)&acos },
   { "acosf", (uintptr_t)&acosf },
@@ -310,7 +311,7 @@ DynLibFunction dynlib_functions[] = {
   { "dlopen", (uintptr_t)&dlopen_fake },
   { "dlsym", (uintptr_t)&dlsym_fake },
   { "dup", (uintptr_t)&dup },
-  { "exit", (uintptr_t)&exit },
+  { "exit", (uintptr_t)&crash_log_exit },     // logs caller (+ backtrace if code != 0), then exit()
   { "exp", (uintptr_t)&exp },
   { "fclose", (uintptr_t)&fclose_fake },
   { "fcntl", (uintptr_t)&fcntl_fake },

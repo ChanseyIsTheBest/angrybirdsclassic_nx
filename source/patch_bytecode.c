@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "patch_bytecode.h"
 
 /* ---- little-endian cursor over the input ---- */
 typedef struct { const uint8_t *p, *end; } RD;
@@ -166,4 +167,121 @@ size_t patch_gamelogic_bytecode(const uint8_t *in, size_t in_len,
 
   (void)nups;(void)npar;(void)vararg;
   return (size_t)(w.p - w.base);
+}
+
+/* ------------------------------------------------------------------------- *
+ * Generic string-constant rename (used for the Simplified Chinese logo art).
+ *
+ * Copies a whole Lua 5.1 chunk, replacing every string constant (in every
+ * function prototype, recursively) that exactly equals map[i].from with
+ * map[i].to. Only constant *contents* change: no instruction, constant index,
+ * prototype or debug record moves, and Lua bytecode holds no absolute offsets,
+ * so a different string length is safe. Unlike the injector above this path is
+ * fully bounds-checked, because it walks every prototype in the file.
+ *
+ * Returns the output length, or 0 on a malformed chunk / out of space.
+ * *hits (optional) receives the number of constants rewritten.
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+  const uint8_t *p, *end;
+  uint8_t *o, *oend;
+  const LuaStrMap *map;
+  int nmap, hits, bad;
+} RN;
+
+static uint32_t rn_peek_u32(RN *s) {
+  if (s->end - s->p < 4) { s->bad = 1; return 0; }
+  return s->p[0] | (s->p[1] << 8) | (s->p[2] << 16) | ((uint32_t)s->p[3] << 24);
+}
+static void rn_copy(RN *s, size_t n) {
+  if (s->bad) return;
+  if ((size_t)(s->end - s->p) < n || (size_t)(s->oend - s->o) < n) { s->bad = 1; return; }
+  memcpy(s->o, s->p, n); s->o += n; s->p += n;
+}
+static uint32_t rn_copy_u32(RN *s) {
+  uint32_t v = rn_peek_u32(s);
+  rn_copy(s, 4);
+  return v;
+}
+static void rn_put_u32(RN *s, uint32_t v) {
+  if (s->bad) return;
+  if (s->oend - s->o < 4) { s->bad = 1; return; }
+  s->o[0] = v; s->o[1] = v >> 8; s->o[2] = v >> 16; s->o[3] = v >> 24; s->o += 4;
+}
+/* count-prefixed array of fixed-size items: copy the count and the items */
+static void rn_copy_array(RN *s, size_t item) {
+  uint32_t n = rn_copy_u32(s);
+  if (s->bad) return;
+  if (item && n > (size_t)(s->end - s->p) / item) { s->bad = 1; return; }
+  rn_copy(s, (size_t)n * item);
+}
+static void rn_copy_string(RN *s) {
+  uint32_t n = rn_copy_u32(s);     /* size incl. trailing NUL; 0 => NULL */
+  rn_copy(s, n);
+}
+
+static void rn_function(RN *s, int depth) {
+  if (s->bad) return;
+  if (depth > 200) { s->bad = 1; return; }       /* Lua's own nesting limit */
+  rn_copy_string(s);                               /* source */
+  rn_copy(s, SZ_INT * 2);                          /* line, lastline */
+  rn_copy(s, 4);                                   /* nups,npar,vararg,maxstack */
+  rn_copy_array(s, SZ_INS);                        /* code */
+
+  uint32_t nk = rn_copy_u32(s);                    /* constants */
+  for (uint32_t i = 0; i < nk && !s->bad; i++) {
+    if (s->p >= s->end) { s->bad = 1; return; }
+    uint8_t t = *s->p;
+    rn_copy(s, 1);
+    if (t == 0) continue;                          /* nil */
+    if (t == 1) { rn_copy(s, 1); continue; }       /* boolean */
+    if (t == 3) { rn_copy(s, 4); continue; }       /* number (4-byte float) */
+    if (t != 4) { s->bad = 1; return; }            /* unknown constant type */
+
+    uint32_t n = rn_peek_u32(s);                   /* string */
+    if (s->bad) return;
+    if (n > (size_t)(s->end - s->p) - 4) { s->bad = 1; return; }
+    const uint8_t *str = s->p + 4;
+    const char *to = NULL;
+    if (n > 0) {
+      for (int m = 0; m < s->nmap; m++) {
+        size_t fl = strlen(s->map[m].from);
+        if (n == fl + 1 && memcmp(str, s->map[m].from, fl) == 0) { to = s->map[m].to; break; }
+      }
+    }
+    if (!to) { rn_copy_string(s); continue; }
+    size_t tl = strlen(to);
+    if ((size_t)(s->oend - s->o) < 4 + tl + 1) { s->bad = 1; return; }
+    rn_put_u32(s, (uint32_t)(tl + 1));
+    memcpy(s->o, to, tl); s->o += tl; *s->o++ = 0;
+    s->p += 4 + n;                                 /* skip the original string */
+    s->hits++;
+  }
+
+  uint32_t np = rn_copy_u32(s);                    /* nested prototypes */
+  for (uint32_t i = 0; i < np && !s->bad; i++) rn_function(s, depth + 1);
+
+  rn_copy_array(s, SZ_INT);                        /* lineinfo */
+  uint32_t nlo = rn_copy_u32(s);                   /* locvars */
+  for (uint32_t i = 0; i < nlo && !s->bad; i++) { rn_copy_string(s); rn_copy(s, SZ_INT * 2); }
+  uint32_t nup = rn_copy_u32(s);                   /* upvalue names */
+  for (uint32_t i = 0; i < nup && !s->bad; i++) rn_copy_string(s);
+}
+
+size_t patch_rename_string_consts(const uint8_t *in, size_t in_len,
+                                  const LuaStrMap *map, int nmap,
+                                  uint8_t *out, size_t out_cap, int *hits) {
+  if (hits) *hits = 0;
+  if (in_len < 12 || out_cap < 12 || memcmp(in, "\x1bLua", 4) != 0) return 0;
+  /* must be the layout this file assumes: 5.1, LE, int/size_t/instr/number = 4 */
+  if (in[4] != 0x51 || in[6] != 1 || in[7] != SZ_INT || in[8] != SZ_ST ||
+      in[9] != SZ_INS || in[10] != 4) return 0;
+
+  RN s = { in + 12, in + in_len, out + 12, out + out_cap, map, nmap, 0, 0 };
+  memcpy(out, in, 12);                             /* header */
+  rn_function(&s, 0);                              /* main chunk (recursive) */
+  if (s.bad || s.p != s.end) return 0;             /* must consume the chunk exactly */
+  if (hits) *hits = s.hits;
+  return (size_t)(s.o - out);
 }

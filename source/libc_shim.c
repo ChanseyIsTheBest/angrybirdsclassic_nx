@@ -37,6 +37,7 @@
 #include "so_util.h"
 #include "libc_shim.h"
 #include "locale_patch.h"
+#include "crash_log.h"
 #include "obb.h"
 
 // Redirect the engine's root-relative data files (it opens absolute paths like
@@ -756,17 +757,15 @@ int resolve_asset_path(const char *rel, char *out, size_t out_size) {
   if (!rel || !out || out_size == 0) return 0;
   while (rel[0] == '.' && rel[1] == '/') rel += 2;          // strip leading "./"
 
-  // Language patch: serve the on-boot-patched gamelogic.lua instead of the stock
-  // one. g_patched_gamelogic is empty until locale_patch_init() succeeds, so the
-  // patcher's own read of the stock file (before that) is never redirected.
-  if (g_patched_gamelogic[0]) {
-    size_t rl = strlen(rel);
-    static const char suf[] = "scripts_common/gamelogic.lua";
-    size_t sl = sizeof(suf) - 1;
-    if (rl >= sl && strcmp(rel + rl - sl, suf) == 0 && file_exists(g_patched_gamelogic)) {
-      snprintf(out, out_size, "%s", g_patched_gamelogic);
-      return 1;
-    }
+  // Language patch: serve the on-boot-patched files (gamelogic.lua, and for
+  // Simplified Chinese the logo scripts + splash composite table) instead of
+  // the stock ones. The redirect table is empty until locale_patch_init()
+  // produces a patch, so the patcher's own reads of the stock files are never
+  // redirected.
+  const char *patched = locale_patch_redirect(rel);
+  if (patched && file_exists(patched)) {
+    snprintf(out, out_size, "%s", patched);
+    return 1;
   }
 
   if (rel[0] == '/' || strchr(rel, ':')) {                  // already a host path
@@ -807,6 +806,17 @@ static const char *remap_data_path(const char *path, char *buf, size_t bufsz) {
     return path;
   snprintf(buf, bufsz, "%s%s", g_asset_base, path); // base + "/fusion.registry"
   return buf;
+}
+
+// Host path of a save/data file the engine opens root-relative (e.g. "/settings.lua"),
+// via the exact same mapping fopen_fake() applies to the engine's own opens.
+int data_file_path(const char *name, char *out, size_t out_size) {
+  if (!name || !out || out_size == 0) return 0;
+  char rel[256], buf[600];
+  snprintf(rel, sizeof rel, "%s%s", name[0] == '/' ? "" : "/", name);
+  const char *p = remap_data_path(rel, buf, sizeof buf);
+  int n = snprintf(out, out_size, "%s", p);
+  return n > 0 && (size_t)n < out_size;
 }
 
 int rename_fake(const char *oldp, const char *newp) {
@@ -854,9 +864,21 @@ FILE *fopen_fake(const char *path, const char *mode) {
     if (m) return m;
   }
 
+  // Language patch: a read of a patched asset opened directly with fopen (not
+  // via AAssetManager) must also get the patched copy, even when a loose stock
+  // file would open fine from the working directory.
+  if (path && mode && strchr(mode, 'r') && !strchr(mode, '+')) {
+    const char *patched = locale_patch_redirect(path);
+    if (patched && file_exists(patched)) {
+      debugPrintf("fopen(%s) -> PATCHED %s\n", path, patched);
+      path = patched;
+    }
+  }
+
   // redirect root-relative save/data files into the game directory
   char rbuf[600];
   path = remap_data_path(path, rbuf, sizeof rbuf);
+  if (mode && strchr(mode, 'r')) crash_log_note(path);
 
   FILE *f = fopen(path, mode);
   // If a relative READ misses, retry via the asset roots -- some engine code
@@ -915,7 +937,11 @@ void *AAssetManager_open_fake(void *mgr, const char *path, int mode) {
   fseek(f, 0, SEEK_END);
   a->size = ftell(f);
   fseek(f, 0, SEEK_SET);
-  debugPrintf("AAsset: open(%s) -> file, %ld bytes\n", path, (long)a->size);
+  crash_log_note(fp);
+  if (locale_patch_redirect(path))   // show which patched file replaced the stock asset
+    debugPrintf("AAsset: open(%s) -> PATCHED %s, %ld bytes\n", path, fp, (long)a->size);
+  else
+    debugPrintf("AAsset: open(%s) -> file, %ld bytes\n", path, (long)a->size);
   return a;
 }
 
