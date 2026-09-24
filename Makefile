@@ -13,7 +13,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 TARGET		:=	$(notdir $(CURDIR))
 APP_TITLE	:=	Angry Birds Classic
 APP_AUTHOR	:=	ChanseyIsTheBest
-APP_VERSION	:=	1.0.1
+APP_VERSION	:=	1.0.2
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
